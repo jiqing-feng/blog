@@ -21,14 +21,14 @@ GPT-OSS achieves inference speeds that approach human reading speed, thanks to i
 
 ## Introduction
 
-GPT-OSS is an open-weight model known for its strong reasoning and versatility. Its MoE architecture, while having a large number of parameters, activates only a small subset during inference. This makes it efficient to run on Intel Xeon CPUs, where Expert Parallelism (EP) can further improve performance by distributing the computation of experts across multiple processes.
+GPT-OSS is an open-weight model known for its strong reasoning and versatility. Its MoE architecture, while having a large number of parameters, activates only a small subset during inference. This makes it efficient to run on Intel Xeon CPUs, where Expert Parallelism can further improve performance by distributing the computation of experts across multiple processes.
 
-In this article, we benchmark the bfloat16 version of GPT-OSS-20B ([lmsys/gpt-oss-20b-bf16](https://huggingface.co/lmsys/gpt-oss-20b-bf16)) on Intel 6th Gen Xeon GNR CPUs at GCP C4. Our results demonstrate that gpt-oss model can reach human reading speed on text generation tasks. Additionally, EP improves TPOT (Time per Output Token) by 5%–70% as batch size increases, enabling significantly higher throughput compared to non-parallel setups.
+In this article, we benchmark the bfloat16 version of GPT-OSS-20B ([lmsys/gpt-oss-20b-bf16](https://huggingface.co/lmsys/gpt-oss-20b-bf16)) on Intel 6th Gen Xeon GNR CPUs at GCP C4. Our results demonstrate that gpt-oss model can reach human reading speed on text generation tasks. Additionally, EP improves TPOT by 5%–70% as batch size increases, enabling significantly higher throughput compared to non-parallel setups.
 
 
 ## Expert Parallelism
 
-Expert Parallelism (EP) is a technique used to distribute the computation of experts across multiple NUMA nodes. In the GPT-OSS model, the experts are evenly split and assigned to different NUMA nodes on Intel Xeon CPUs. By leveraging EP, the model can achieve significant speed-ups, especially for large-scale MoE architectures.
+Expert Parallelism is a technique used to distribute the computation of experts across multiple NUMA nodes. In the GPT-OSS model, the experts are evenly split and assigned to different NUMA nodes on Intel Xeon CPUs. By leveraging EP, the model can achieve significant speed-ups, especially for large-scale MoE architectures.
 
 <kbd>
   <img src="assets/gpt-oss-on-intel-xeon/expert_parallelism.png">
