@@ -165,7 +165,7 @@ if __name__ == "__main__":
             benchmark(model, tokenizer, batch_size, generation_config)
         if int(os.environ['RANK']) == 0:
             print(f"TTFT = {prefill_latency * 1000} ms", flush=True)
-            print(f"TPOP = {decoding_latency * 1000} ms", flush=True)
+            print(f"TPOT = {decoding_latency * 1000} ms", flush=True)
             print(f"throughput = {throughput}", flush=True)
 ```
 
