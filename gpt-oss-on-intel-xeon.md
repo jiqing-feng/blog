@@ -1,6 +1,6 @@
 ---
 title: "Optimizing GPT OSS on 6th Gen Xeon at GCP"
-thumbnail: /blog/assets/xxx.png # waiting for upload
+thumbnail: /blog/assets/optimum_intel/intel_thumbnail.png
 authors:
 - user: Jiqing
   guest: true
