@@ -16,85 +16,178 @@ authors:
 
 # Optimizing GPT OSS on 6th Gen Xeon at GCP
 
-With our optimization, GPT-OSS achieves inference speeds that approach human reading speed up to batch size 4. We have merged all optimizations into Transformers (PR [40304](https://github.com/huggingface/transformers/pull/40304) and [40545](https://github.com/huggingface/transformers/pull/40545)), so users can benefit from them out of the box. Users can apply GNR powered C4 and setup environments by following [huggingface.co/blog/intel-gcp-c4](https://huggingface.co/blog/intel-gcp-c4) to get the results in this blog.
+With our optimization, GPT-OSS achieves inference speeds that approach human reading speed up to batch size 4. We have merged all optimizations into Transformers, so users can benefit from them out of the box. Users can reproduce the resultes in this blog on GNR powered C4 by following this blog.
 
 
 ## Introduction
 
 GPT OSS is an open-weight model known for its strong reasoning and versatility. Its MoE architecture, while having a large number of parameters, activates only a small subset during inference. This makes it possible to run large models on Intel Xeon CPUs, where Expert Parallelism can further improve performance by distributing the computation of experts across multiple processes.
 
-In this blog, we benchmark the bfloat16 version of GPT OSS-20B ([lmsys/GPT OSS-20b-bf16](https://huggingface.co/lmsys/GPT OSS-20b-bf16)) on Intel 6th Gen Xeon GNR CPUs at GCP C4. Our results demonstrate that GPT OSS model can reach human reading speed on text generation tasks. Additionally, EP improves TPOT by 5%–70% as batch size increases, enabling significantly higher throughput compared to non-parallel setups.
-
-
-## Expert Parallelism
-
-Expert Parallelism is a technique used to distribute the computation of experts across multiple NUMA nodes. In the GPT OSS model, the experts are evenly split and assigned to different NUMA nodes on Intel Xeon CPUs. By leveraging EP, the model can achieve significant speed-ups, especially for large-scale MoE architectures.
+The following diagram briefly shows our optimizations on the experts.
 
 <kbd>
-  <img src="assets/GPT OSS-on-intel-xeon/expert_parallelism.png">
+  <img src="assets/gpt-oss-on-intel-xeon/expert_parallelism.png">
 </kbd>
 
-To enable EP on GPT OSS model in transformers, we just need to pass `tp_plan="auto"` when loading the model. This is because the experts performs grouped_gemm strategy in the GPT OSS [_tp_plan](https://github.com/huggingface/transformers/blob/main/src/transformers/models/gpt_oss/configuration_gpt_oss.py#L40-L45).
+The first optimization in PR [40304](https://github.com/huggingface/transformers/pull/40304) focus on the expert computing strategy. Previously, Transformers computed all tokens for every expert, leading to unnecessary computation overhead. With our optimization, each expert processes only the tokens it activates.
 
-We recommend you to use the command `mpirun -np 2 --map-by ppr:1:numa --bind-to numa` to bind the computation of different experts to different NUMA nodes. This ensures that each NUMA node handles its assigned experts independently, leveraging the locality of memory and computation to improve performance and reduce communication overhead.
+The second optimization in [40545](https://github.com/huggingface/transformers/pull/40545) enables native transfomers expert parallelism for GPT OSS model. EP (Expert Parallelism) is a technique used to distribute the computation of experts across multiple computation resources.
 
-`mpirun -np 2 --map-by ppr:1:numa --bind-to numa -genv MASTER_ADDR=127.0.0.1 -genv MASTER_PORT=29500 -genv OMP_NUM_THREADS=<cores_per_numa> python tp_hf.py`
+In this blog, we benchmark the bfloat16 version of GPT OSS-20B ([lmsys/GPT OSS-20b-bf16](https://huggingface.co/lmsys/GPT OSS-20b-bf16)) on Intel 6th Gen Xeon GNR CPUs at GCP C4. The task is text generation with input sequence length 1024 and output sequence length 1024, and we sweep batch size from 1 to 64.
 
-```diff
+
+## Create C4 instance
+Visit [google cloud console](https://console.cloud.google.com/) and click on `create a VM` under your project. Follow the below steps to create a 288-vcpu instance which corresponds to one Intel Granite Rapids socket.
+
+1. pick C4 in `Machine configuration` tab and specify `Machine type` as `c4-standard-288`. You can also set `CPU platform` and turn on all-core turbo to make performance more stable:
+   ![alt text](assets/gpt-oss-on-intel-xeon/gnr.png)
+2. keep other configurations as default
+3. click `CREATE` button
+
+
+## Set up environment
+Run `vim Dockerfile` and paste the following codes.
+
+```dockerfile
+FROM intel/deep-learning-essentials:2025.1.3-0-devel-ubuntu24.04 AS base
+SHELL ["/bin/bash", "-c"]
+
+ARG PYTHON_VERSION=3.12
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && \
+    apt-get install -y software-properties-common && \
+    add-apt-repository -y ppa:deadsnakes/ppa && \
+    apt-get update
+
+RUN apt-get update && apt-get -y install apt-utils build-essential ca-certificates \
+    clinfo curl git git-lfs vim numactl python3-dev wget google-perftools \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
+
+# Use virtual env because Ubuntu:24 does not allowed pip on original python
+RUN curl -LsSf https://astral.sh/uv/install.sh | sh
+ENV PATH="/root/.local/bin:$PATH"
+ENV VIRTUAL_ENV="/opt/venv"
+ENV UV_PYTHON_INSTALL_DIR=/opt/uv/python
+RUN uv venv --python ${PYTHON_VERSION} --seed ${VIRTUAL_ENV}
+ENV PATH="$VIRTUAL_ENV/bin:$PATH"
+
+RUN pip install torch torchvision torchaudio torchcodec --index-url https://download.pytorch.org/whl/cpu --no-cache-dir
+RUN pip install -U datasets transformers accelerate intel-openmp
+
+ENV LD_PRELOAD=${LD_PRELOAD}:/opt/venv/lib/libiomp5.so:/usr/lib/x86_64-linux-gnu/libtcmalloc.so.4
+ENV KMP_AFFINITY=granularity=fine,compact,1,0
+
+RUN touch /entrypoint.sh && chmod +x /entrypoint.sh
+RUN echo "#!/bin/bash" >> /entrypoint.sh && echo "/bin/bash" >> /entrypoint.sh
+
+ENTRYPOINT ["/entrypoint.sh"]
+```
+
+Run `docker build . -t <your_docker_image_tag>`, then, run `sudo docker run -it --rm --privileged -v /home/<your_home_folder>:/workspace <your_docker_image_tag> /bin/bash`
+
+We are in container now, can start to benchmark.
+
+
+## Benchmark
+
+Run `vim benchmark.py` and paste the following codes.
+
+```python
 import os
+import time
 import torch
-from transformers import AutoTokenizer, AutoModelForCausalLM
+from datasets import load_dataset
+from transformers import AutoModelForCausalLM, AutoTokenizer
 
-# The mpirun use PMI_RANK and PMI_SIZE as default env to pass rank and world size.
-# We need to set RANK, LOCAL_RANK and WORLD_SIZE which can be recognized by transformers.
 os.environ['RANK'] = str(os.environ.get('PMI_RANK', 0))
 os.environ['LOCAL_RANK'] = str(os.environ.get('PMI_RANK', 0))
 os.environ['WORLD_SIZE'] = str(os.environ.get('PMI_SIZE', 1))
+INPUT_TOKENS = 1024
+MAX_NEW_TOKENS = 1024
 
-model_id = "lmsys/GPT OSS-20b-bf16"
-# Load model with tp_plan="auto" to enable Expert Parallelism
-model = AutoModelForCausalLM.from_pretrained(
-    model_id,
-    dtype=torch.bfloat16,
-+    tp_plan="auto"
-)
-# Prepare input tokens
-tokenizer = AutoTokenizer.from_pretrained(model_id)
-messages = [
-    {"role": "user", "content": "How many rs are in the word 'strawberry'?"},
-]
-inputs = tokenizer.apply_chat_template(
-    messages,
-    add_generation_prompt=True,
-    tokenize=True,
-    return_tensors="pt",
-    return_dict=True,
-).to(model.device)
+def get_inputs(tokenizer, batch_size):
+    dataset = load_dataset("ola13/small-the_pile", split="train")
+    tokenizer.padding_side = "left"
+    selected_texts = []
+    for sample in dataset:
+        input_ids = tokenizer(sample["text"], return_tensors="pt").input_ids
+        if len(selected_texts) == 0 and input_ids.shape[-1] >= INPUT_TOKENS:
+            selected_texts.append(sample["text"])
+        elif len(selected_texts) > 0:
+            selected_texts.append(sample["text"])
+        if len(selected_texts) == batch_size:
+            break
 
-generated = model.generate(**inputs, max_new_tokens=100)
-print(tokenizer.decode(generated[0][inputs["input_ids"].shape[-1]:]))
+    return tokenizer(selected_texts, max_length=INPUT_TOKENS, padding="max_length", truncation=True, return_tensors="pt")
+
+def run_generate(model, inputs, generation_config):
+    inputs["generation_config"] = generation_config
+    pre = time.time()
+    model.generate(**inputs)
+    latency = (time.time() - pre)
+    return latency
+
+def benchmark(model, tokenizer, batch_size, generation_config):
+    inputs = get_inputs(tokenizer, batch_size)
+    generation_config.max_new_tokens = 8
+    generation_config.min_new_tokens = 8
+    _ = run_generate(model, inputs, generation_config) # warm_up
+    generation_config.max_new_tokens = 1
+    generation_config.min_new_tokens = 1
+    prefill_latency = run_generate(model, inputs, generation_config)
+    generation_config.max_new_tokens = MAX_NEW_TOKENS
+    generation_config.min_new_tokens = MAX_NEW_TOKENS
+    total_latency = run_generate(model, inputs, generation_config)
+    decoding_latency = (total_latency - prefill_latency) / (MAX_NEW_TOKENS - 1)
+    throughput = MAX_NEW_TOKENS * batch_size / total_latency
+
+    return prefill_latency, decoding_latency, throughput
+
+
+if __name__ == "__main__":
+    model_id = "lmsys/gpt-oss-20b-bf16"
+    tokenizer = AutoTokenizer.from_pretrained(model_id)
+    model_kwargs = {"dtype": torch.bfloat16}
+    if int(os.environ.get("WORLD_SIZE", 0)) > 1:
+        model_kwargs["tp_plan"] = "auto"
+    model = AutoModelForCausalLM.from_pretrained(model_id, **model_kwargs)
+    model.config._attn_implementation="sdpa"
+    generation_config = model.generation_config
+    generation_config.do_sample = False
+    generation_config.cache_implementation="static"
+
+    for batch_size in [1, 2, 4, 8, 16, 32, 64]:
+        if int(os.environ['RANK']) == 0:
+            print(f"---------- Run generation with batch size = {batch_size} ----------", flush=True)
+        prefill_latency, decoding_latency, throughput = \
+            benchmark(model, tokenizer, batch_size, generation_config)
+        if int(os.environ['RANK']) == 0:
+            print(f"TTFT = {prefill_latency * 1000} ms", flush=True)
+            print(f"TPOP = {decoding_latency * 1000} ms", flush=True)
+            print(f"throughput = {throughput}", flush=True)
 ```
 
+Run `numactl -C 0-71 --membind 0 python benchmark.py` to get the performance without EP.
 
-## Performance Evaluation of Expert Parallelism
+Run `numactl -C 0-43 --membind 0 mpirun -np 2 --map-by ppr:1:numa --bind-to numa -genv MASTER_ADDR=127.0.0.1 -genv MASTER_PORT=29500 -genv OMP_NUM_THREADS=24 python benchmark.py` to get the performance with EP=2.
 
-To evaluate the performance of Expert Parallelism (EP), we fixed the input and output sequence lengths to 1024 tokens and tested the latency under different batch sizes. The tests were conducted on Intel 6-th Gen Xeon GNR CPU powered GCP C4 with and without EP enabled.
+
+## Results and Conclusion
 
 The following figures show the performance results for TTFT (Time to First Token) and TPOT (Time per Output Token) under various batch sizes.
 
 <kbd>
-  <img src="assets/GPT OSS-on-intel-xeon/TTFT-GPT OSS.png">
+  <img src="assets/gpt-oss-on-intel-xeon/TTFT-GPT OSS.png">
 </kbd>
 
 <kbd>
-  <img src="assets/GPT OSS-on-intel-xeon/TPOT-GPT OSS.png">
+  <img src="assets/gpt-oss-on-intel-xeon/TPOT-GPT OSS.png">
 </kbd>
 
 In the TTFT results, we observed that EP could complete the prefill in 1 second for batch size 1. However, as batch size increases, EP becomes slower than non-EP. This is because non-EP utilizes all the computational resources available on the instance, while EP limits each group of experts to only a portion of the resources. Non-EP benefits from more resources, resulting in better TTFT performance at larger batch sizes.
 
 In the TPOT results, we observed that both EP and non-EP configurations can achieve human reading speed. Human reading speed is 240~300ms per word, so we can achieve that up to batch size 4. Moreover, EP demonstrates better performance as batch size increases. By distributing expert computation across multiple NUMA nodes, EP allows each node to process its workload independently. This reduces the computational burden on a single process and improves overall efficiency. Additionally, EP leverages memory and computation locality within each NUMA node, minimizing communication overhead and achieving better scalability. Ultimately, EP achieved a throughput of 95 tokens per second when batch size is 64.
-
-
-## Conclusion
 
 This blog demonstrates the potential of running large MoE models on CPUs. With further optimizations, we look forward to unlocking even greater performance on CPU-based systems in the future.
