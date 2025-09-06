@@ -179,15 +179,15 @@ Run `numactl -C 0-43 --membind 0 mpirun -np 2 --map-by ppr:1:numa --bind-to numa
 The following figures show the performance results for TTFT (Time to First Token) and TPOT (Time per Output Token) under various batch sizes.
 
 <kbd>
-  <img src="assets/gpt-oss-on-intel-xeon/TTFT-GPT OSS.png">
+  <img src="assets/gpt-oss-on-intel-xeon/TTFT-gpt-oss.png">
 </kbd>
 
 <kbd>
-  <img src="assets/gpt-oss-on-intel-xeon/TPOT-GPT OSS.png">
+  <img src="assets/gpt-oss-on-intel-xeon/TPOT-gpt-oss.png">
 </kbd>
 
-In the TTFT results, we observed that EP could complete the prefill in 1 second for batch size 1. However, as batch size increases, EP becomes slower than non-EP. This is because non-EP utilizes all the computational resources available on the instance, while EP limits each group of experts to only a portion of the resources. Non-EP benefits from more resources, resulting in better TTFT performance at larger batch sizes.
+In the TTFT results, we observed that EP could complete the prefill in 1 second for batch size 1. However, as batch size increases, EP becomes slower than non-EP, showing 10% regression.
 
-In the TPOT results, we observed that both EP and non-EP configurations can achieve human reading speed. Human reading speed is 240~300ms per word, so we can achieve that up to batch size 4. Moreover, EP demonstrates better performance as batch size increases. By distributing expert computation across multiple NUMA nodes, EP allows each node to process its workload independently. This reduces the computational burden on a single process and improves overall efficiency. Additionally, EP leverages memory and computation locality within each NUMA node, minimizing communication overhead and achieving better scalability. Ultimately, EP achieved a throughput of 95 tokens per second when batch size is 64.
+In the TPOT results, we observed that both EP and non-EP configurations can achieve human reading speed. Human reading speed is 240~300ms per word, so we can achieve that up to batch size 4. Moreover, EP demonstrates better performance as batch size increases. Ultimately, EP achieved a throughput of 95 tokens per second when batch size is 64.
 
 This blog demonstrates the potential of running large MoE models on CPUs. With further optimizations, we look forward to unlocking even greater performance on CPU-based systems in the future.
