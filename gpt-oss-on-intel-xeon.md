@@ -33,7 +33,7 @@ The first optimization in PR [40304](https://github.com/huggingface/transformers
 
 The second optimization in [40545](https://github.com/huggingface/transformers/pull/40545) enables native transfomers expert parallelism for GPT OSS model. EP (Expert Parallelism) is a technique used to distribute the computation of experts across multiple computation resources.
 
-In this blog, we benchmark the bfloat16 version of GPT OSS-20B ([lmsys/GPT OSS-20b-bf16](https://huggingface.co/lmsys/GPT OSS-20b-bf16)) on Intel 6th Gen Xeon GNR CPUs at GCP C4. The task is text generation with input sequence length 1024 and output sequence length 1024, and we sweep batch size from 1 to 64.
+In this blog, we benchmark the bfloat16 version of GPT OSS model [lmsys/gpt-oss-20b-bf16](https://huggingface.co/lmsys/gpt-oss-20b-bf16) on Intel 6th Gen Xeon GNR CPUs at GCP C4. The task is text generation with input sequence length 1024 and output sequence length 1024, and we sweep batch size from 1 to 64.
 
 
 ## Create C4 instance
