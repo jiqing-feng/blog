@@ -85,9 +85,10 @@ RUN echo "#!/bin/bash" >> /entrypoint.sh && echo "/bin/bash" >> /entrypoint.sh
 ENTRYPOINT ["/entrypoint.sh"]
 ```
 
-Run `docker build . -t <your_docker_image_tag>`, then, run `sudo docker run -it --rm --privileged -v /home/<your_home_folder>:/workspace <your_docker_image_tag> /bin/bash`
+Run `sudo docker build . -t <your_docker_image_tag>`, then, run `sudo docker run -it --rm --privileged -v /home/<your_home_folder>:/workspace <your_docker_image_tag> /bin/bash`
 
-We are in container now, can start to benchmark.
+We are in container now, do following steps:
+`pip install git+https://github.com/huggingface/transformers.git`
 
 
 ## Benchmark
@@ -105,7 +106,7 @@ os.environ['RANK'] = str(os.environ.get('PMI_RANK', 0))
 os.environ['LOCAL_RANK'] = str(os.environ.get('PMI_RANK', 0))
 os.environ['WORLD_SIZE'] = str(os.environ.get('PMI_SIZE', 1))
 INPUT_TOKENS = 1024
-MAX_NEW_TOKENS = 1024
+OUTPUT_TOKENS = 1024
 
 def get_inputs(tokenizer, batch_size):
     dataset = load_dataset("ola13/small-the_pile", split="train")
@@ -137,11 +138,11 @@ def benchmark(model, tokenizer, batch_size, generation_config):
     generation_config.max_new_tokens = 1
     generation_config.min_new_tokens = 1
     prefill_latency = run_generate(model, inputs, generation_config)
-    generation_config.max_new_tokens = MAX_NEW_TOKENS
-    generation_config.min_new_tokens = MAX_NEW_TOKENS
+    generation_config.max_new_tokens = OUTPUT_TOKENS
+    generation_config.min_new_tokens = OUTPUT_TOKENS
     total_latency = run_generate(model, inputs, generation_config)
-    decoding_latency = (total_latency - prefill_latency) / (MAX_NEW_TOKENS - 1)
-    throughput = MAX_NEW_TOKENS * batch_size / total_latency
+    decoding_latency = (total_latency - prefill_latency) / (OUTPUT_TOKENS - 1)
+    throughput = OUTPUT_TOKENS * batch_size / total_latency
 
     return prefill_latency, decoding_latency, throughput
 
@@ -171,12 +172,12 @@ if __name__ == "__main__":
 
 Run `numactl -C 0-71 --membind 0 python benchmark.py` to get the performance without EP.
 
-Run `numactl -C 0-43 --membind 0 mpirun -np 2 --map-by ppr:1:numa --bind-to numa -genv MASTER_ADDR=127.0.0.1 -genv MASTER_PORT=29500 -genv OMP_NUM_THREADS=24 python benchmark.py` to get the performance with EP=2.
+Run `mpirun -np 2 --map-by ppr:1:numa --bind-to numa -genv MASTER_ADDR=127.0.0.1 -genv MASTER_PORT=29500 -genv OMP_NUM_THREADS=24 python benchmark.py` to get the performance with EP=2.
 
 
 ## Results and Conclusion
 
-The following figures show the performance results for TTFT (Time to First Token) and TPOT (Time per Output Token) under various batch sizes.
+The following figures show the performance results for TTFT (Time to First Token) and TPOT (Time per Output Token) under batch sizes 1~8.
 
 <kbd>
   <img src="assets/gpt-oss-on-intel-xeon/TTFT-gpt-oss.png">
@@ -186,8 +187,14 @@ The following figures show the performance results for TTFT (Time to First Token
   <img src="assets/gpt-oss-on-intel-xeon/TPOT-gpt-oss.png">
 </kbd>
 
-In the TTFT results, we observed that EP could complete the prefill in 1 second for batch size 1. However, as batch size increases, EP becomes slower than non-EP, showing 10% regression.
+From the figures above, we can see that with EP enabled, the model achieves human reading speed (240-300 ms/token) up to batch size 8, where the TPOT is 299 ms/token.
 
-In the TPOT results, we observed that both EP and non-EP configurations can achieve human reading speed. Human reading speed is 240~300ms per word, so we can achieve that up to batch size 4. Moreover, EP demonstrates better performance as batch size increases. Ultimately, EP achieved a throughput of 95 tokens per second when batch size is 64.
+The following figures show the throughputs under batch sizes 8~64.
+
+<kbd>
+  <img src="assets/gpt-oss-on-intel-xeon/throughput-gpt-oss.png">
+</kbd>
+
+From the throughput figure, we can observe that EP significantly improves throughput. With EP enabled, the model achieves a throughput of 85 tokens/second at batch size 64.
 
 This blog demonstrates the potential of running large MoE models on CPUs. With further optimizations, we look forward to unlocking even greater performance on CPU-based systems in the future.
